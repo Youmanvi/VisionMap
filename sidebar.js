@@ -119,10 +119,30 @@ async function createAISession() {
       aiSession.destroy();
     }
     
+    // Check availability first (required according to docs)
+    const available = await LanguageModel.availability();
+    console.log('Current availability:', available);
+    
+    if (available === 'unavailable') {
+      throw new Error('LanguageModel is unavailable');
+    }
+    
+    if (available === 'downloadable' || available === 'downloading') {
+      throw new Error('LanguageModel is not ready yet. Please wait for download to complete.');
+    }
+    
+    if (available !== 'available') {
+      throw new Error(`LanguageModel status: ${available}`);
+    }
+    
+    // Get parameters for session creation
+    const params = await LanguageModel.params();
+    console.log('LanguageModel params:', params);
+    
     // Create session using the correct LanguageModel API
     aiSession = await LanguageModel.create({
-      temperature: 0.3,
-      topK: 20,
+      temperature: params.defaultTemperature || 1.0,
+      topK: params.defaultTopK || 3,
       initialPrompts: [
         {
           role: 'system',
@@ -206,72 +226,93 @@ function extractPreciseDateMatches(content) {
   const matches = [];
   const seen = new Set();
   
-  // Comprehensive date patterns
+  // More comprehensive patterns for historical content
   const datePatterns = [
-    // Full dates with months
+    // Ancient dates with AD/BC/CE/BCE - highest priority
     {
-      regex: /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(19|20)\d{2}\b/gi,
-      type: 'full_date',
-      priority: 1
-    },
-    {
-      regex: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},?\s+(19|20)\d{2}\b/gi,
-      type: 'short_date', 
-      priority: 1
-    },
-    // Numeric dates
-    {
-      regex: /\b\d{1,2}[\/\-]\d{1,2}[\/\-](19|20)\d{2}\b/g,
-      type: 'numeric_date',
-      priority: 2
-    },
-    {
-      regex: /\b(19|20)\d{2}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g,
-      type: 'iso_date',
-      priority: 2
-    },
-    // Years with context
-    {
-      regex: /\b(in|during|since|from|until|by|around|circa|about|year)\s+(19|20)\d{2}\b/gi,
-      type: 'year_context',
-      priority: 2
-    },
-    // Historical years
-    {
-      regex: /\b(19[0-9]{2}|20[0-2][0-9])\b(?=\s*[-–—]\s*|\s+(war|battle|revolution|independence|founded|established|born|died|elected|treaty|agreement|act|law))/gi,
-      type: 'historical_year',
-      priority: 3
-    },
-    // Ancient dates
-    {
-      regex: /\b\d{1,4}\s*(BC|BCE|AD|CE)\b/gi,
+      regex: /\b(\d{1,4})\s*(AD|CE|BC|BCE)\b/gi,
       type: 'ancient_date',
       priority: 1
+    },
+    // Full dates with months and ancient eras
+    {
+      regex: /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{1,4})\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'full_date_ancient',
+      priority: 1
+    },
+    // Short month dates with ancient eras
+    {
+      regex: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2}),?\s+(\d{1,4})\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'short_date_ancient',
+      priority: 1
+    },
+    // Years in historical context
+    {
+      regex: /\b(in|during|around|circa|about|year|from|until|by)\s+(\d{1,4})\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'year_context_ancient',
+      priority: 1
+    },
+    // Standalone ancient years (be more permissive for historical sites)
+    {
+      regex: /\b([1-9]\d{0,3})\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'standalone_ancient',
+      priority: 1
+    },
+    // Ranges like "79-81 AD" or "62–79 AD"
+    {
+      regex: /\b(\d{1,4})[-–—](\d{1,4})\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'date_range_ancient',
+      priority: 1
+    },
+    // Modern dates for archaeological context
+    {
+      regex: /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(19|20)\d{2}\b/gi,
+      type: 'full_date_modern',
+      priority: 3
+    },
+    // Years with clear archaeological/historical context
+    {
+      regex: /\b(excavat|discover|found|uncover|research|stud)\w*\s+.*?(\d{4})\b/gi,
+      type: 'archaeological_context',
+      priority: 3
+    },
+    // Roman numerals for centuries
+    {
+      regex: /\b(\d{1,2})(st|nd|rd|th)\s+century\s*(AD|CE|BC|BCE)\b/gi,
+      type: 'century_ancient',
+      priority: 2
+    },
+    // Numeric dates that might be ancient (more permissive)
+    {
+      regex: /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{1,4})\s*(AD|CE|BC|BCE)?\b/g,
+      type: 'numeric_date',
+      priority: 4
     }
   ];
   
   // Process each pattern
   datePatterns.forEach(pattern => {
     const patternMatches = [...content.matchAll(pattern.regex)];
+    console.log(`Pattern ${pattern.type} found ${patternMatches.length} matches`);
     
     patternMatches.forEach(match => {
       const dateText = match[0];
       const startPos = match.index;
       const endPos = startPos + dateText.length;
       
-      // Get context around the match
-      const contextStart = Math.max(0, startPos - 150);
-      const contextEnd = Math.min(content.length, endPos + 150);
+      // Get more context around the match
+      const contextStart = Math.max(0, startPos - 250);
+      const contextEnd = Math.min(content.length, endPos + 250);
       const context = content.substring(contextStart, contextEnd);
       
-      // Create unique key
-      const contextKey = `${dateText}-${context.substring(0, 50)}`.toLowerCase().replace(/\s+/g, ' ');
+      // Create unique key to avoid duplicates
+      const contextKey = `${dateText}-${context.substring(0, 80)}`.toLowerCase().replace(/\s+/g, '');
       
       if (seen.has(contextKey)) return;
       seen.add(contextKey);
       
-      // Validate the match
-      if (isValidDateMatch(context, dateText)) {
+      // More permissive validation for historical content
+      if (isValidHistoricalDateMatch(context, dateText, pattern.type)) {
         matches.push({
           dateText: dateText,
           context: context.trim(),
@@ -283,49 +324,68 @@ function extractPreciseDateMatches(content) {
     });
   });
   
+  console.log(`Total valid matches found: ${matches.length}`);
+  
   // Sort by priority and limit results
   return matches
     .sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority;
       return a.position - b.position;
     })
-    .slice(0, 20); // Limit to 20 matches
+    .slice(0, 18); // Increase to 18 matches for more events
 }
 
-// Validate date matches
-function isValidDateMatch(context, dateText) {
+// More permissive validation for historical content
+function isValidHistoricalDateMatch(context, dateText, type) {
   const lowContext = context.toLowerCase();
   
-  // Skip navigation and metadata
+  // Skip obvious navigation and metadata
   const skipPatterns = [
     'copyright', 'all rights reserved', 'terms of service', 'privacy policy',
     'home', 'about', 'contact', 'menu', 'search', 'login', 'sign up',
-    'posted on', 'updated on', 'last modified', 'page', 'next', 'previous'
+    'isbn', 'doi:', 'http://', 'https://', 'www.', '.com', '.org',
+    'retrieved on', 'accessed', 'cite web', 'citation needed'
   ];
   
   if (skipPatterns.some(pattern => lowContext.includes(pattern))) {
     return false;
   }
   
-  // For standalone years, require historical context
-  if (dateText.match(/^\d{4}$/)) {
-    const historicalWords = [
-      'war', 'battle', 'born', 'died', 'founded', 'established', 'began', 'ended', 
-      'revolution', 'independence', 'treaty', 'elected', 'invented', 'discovered',
-      'built', 'created', 'started', 'opened', 'closed', 'married', 'graduated'
-    ];
-    if (!historicalWords.some(word => lowContext.includes(word))) {
-      return false;
-    }
+  // For ancient dates (AD/BC), be very permissive - they're almost always relevant
+  if (type.includes('ancient') || dateText.match(/\b(AD|CE|BC|BCE)\b/i)) {
+    // Just need some substantial context
+    return context.trim().length > 40;
   }
   
+  // For archaeological dates, look for discovery/research context
+  if (type === 'archaeological_context') {
+    const archaeoWords = [
+      'excavat', 'discover', 'found', 'uncover', 'research', 'study', 
+      'investigation', 'restoration', 'conservation', 'archaeological'
+    ];
+    return archaeoWords.some(word => lowContext.includes(word)) && context.trim().length > 50;
+  }
+  
+  // For modern dates, be more selective but not too restrictive
+  if (dateText.match(/^(19|20)\d{2}$/)) {
+    const relevantWords = [
+      'discovery', 'excavation', 'found', 'uncovered', 'archaeological',
+      'research', 'study', 'investigation', 'restoration', 'conservation',
+      'unesco', 'world heritage', 'site', 'monument', 'artifact', 'ruins'
+    ];
+    return relevantWords.some(word => lowContext.includes(word)) && context.trim().length > 60;
+  }
+  
+  // Default: need substantial context
   return context.trim().length > 50;
 }
 
 // Process matches with AI in small batches
 async function processPreciseMatches(matches, pageTitle) {
   const allEvents = [];
-  const batchSize = 5; // Small batches for reliability
+  const batchSize = 4; // Slightly larger batches since we want more results
+  
+  console.log(`Processing ${matches.length} date matches in batches of ${batchSize}`);
   
   for (let i = 0; i < matches.length; i += batchSize) {
     const batch = matches.slice(i, i + batchSize);
@@ -336,19 +396,21 @@ async function processPreciseMatches(matches, pageTitle) {
     
     try {
       const events = await processSmallBatch(batch, pageTitle);
-      console.log(`Batch ${batchNum} produced ${events.length} events`);
+      console.log(`Batch ${batchNum}/${totalBatches} produced ${events.length} events`);
       
       if (events.length > 0) {
         allEvents.push(...events);
+        console.log(`Total events so far: ${allEvents.length}`);
       }
       
-      // Small delay between batches
+      // Very small delay between batches for responsiveness
       if (i + batchSize < matches.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
       
     } catch (error) {
       console.warn(`Batch ${batchNum} failed:`, error);
+      // Continue processing other batches
     }
   }
   
@@ -363,36 +425,38 @@ async function processSmallBatch(matches, pageTitle) {
   }
   
   try {
-    // Create focused prompt for each match
+    // Create focused prompt for historical content
     const contextBlocks = matches.map((match, index) => {
-      return `[${index + 1}] Date: "${match.dateText}" | Context: "${match.context.substring(0, 200)}..."`;
+      return `[${index + 1}] Original: "${match.dateText}" | Context: "${match.context.substring(0, 150)}..."`;
     }).join('\n\n');
     
-    const prompt = `Extract timeline events from this webpage content. For each date pattern, identify the specific historical event, fact, or milestone mentioned.
+    const prompt = `You are analyzing historical content from "${pageTitle}". Extract timeline events from these date patterns, being very careful about historical accuracy.
 
-Page: ${pageTitle}
+CRITICAL INSTRUCTIONS:
+- For ancient dates (like "79 AD", "62 BC"), preserve the era (AD/BC/CE/BCE)
+- For BC dates, use negative ISO years: 79 BC becomes "-0079-08-24"  
+- For AD dates before year 1000, use proper ISO: 79 AD becomes "0079-08-24"
+- When you see a year like "79" in Pompeii context, it likely means "79 AD" (the famous eruption)
+- Create events for EACH date pattern provided - don't skip any unless clearly irrelevant
+- Use specific dates when mentioned, otherwise reasonable defaults (August 24 for Vesuvius, etc.)
+- Include both ancient events AND modern archaeological discoveries
+- Be generous - extract as many relevant historical events as possible
 
 Date patterns found:
 ${contextBlocks}
 
-Instructions:
-- Extract only clear, factual events (births, deaths, founding dates, historical events, etc.)
-- Create concise titles (max 60 characters)
-- Provide brief descriptions (max 120 characters)
-- Use ISO date format (YYYY-MM-DD) when possible
-- For incomplete dates, use YYYY-01-01 or YYYY-MM-01
-- For BC dates, use negative years like -0044-03-15
-- Skip if no clear event is mentioned
+Examples of correct formatting:
+- "79 AD" (Vesuvius eruption) → {"date": "0079-08-24", "title": "Mount Vesuvius Erupts", "description": "Volcanic eruption destroys Pompeii and Herculaneum"}
+- "62 AD" (earthquake) → {"date": "0062-02-05", "title": "Major Earthquake", "description": "Earthquake damages buildings in Pompeii"}  
+- "1748" (excavation) → {"date": "1748-03-23", "title": "Pompeii Rediscovered", "description": "First systematic excavations begin"}
+- "200 BC" → {"date": "-0200-01-01", "title": "Samnite Period", "description": "Pompeii under Samnite control"}
 
-Respond with valid JSON array only:
-[
-  {"date": "YYYY-MM-DD", "title": "Event title", "description": "Brief description"},
-  {"date": "YYYY-MM-DD", "title": "Another event", "description": "Another description"}
-]`;
+Try to extract an event for each date pattern. Respond with valid JSON array only:
+[{"date": "YYYY-MM-DD", "title": "Event title", "description": "Brief description"}]`;
 
-    console.log('Sending prompt to LanguageModel...');
+    console.log('Sending historical prompt to LanguageModel...');
     
-    // Use the correct prompt method
+    // Use non-streaming for more reliable JSON parsing
     const result = await aiSession.prompt(prompt);
     
     console.log('AI response received, parsing...');
