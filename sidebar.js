@@ -19,14 +19,18 @@ async function extractTimeline() {
     // Step 1: Get page content
     const pageData = await getPageContent();
     
-    // Step 2: Fast preprocessing - find date candidates
-    showStatus('Finding date patterns...', 'loading');
-    const dateSnippets = extractDateCandidates(pageData.content);
+    // Step 2: Precise preprocessing - find and highlight exact date matches
+    showStatus('Finding precise date matches...', 'loading');
+    const dateMatches = extractPreciseDateMatches(pageData.content);
     
-    console.log(`Found ${dateSnippets.length} date candidates`);
+    console.log(`Found ${dateMatches.length} precise date matches`);
     
-    // Step 3: Process with hybrid approach
-    const events = await processEventsHybrid(dateSnippets, pageData.title);
+    if (dateMatches.length === 0) {
+      throw new Error('No date patterns found in the content');
+    }
+    
+    // Step 3: Process in small batches with exact context
+    const events = await processPreciseMatches(dateMatches, pageData.title);
     
     // Step 4: Cache and display
     processedEvents = events;
@@ -41,12 +45,41 @@ async function extractTimeline() {
   }
 }
 
-// Get content from current webpage
+// Get content from current webpage with retry logic
 async function getPageContent() {
+  const maxRetries = 3;
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Attempting to get page content (attempt ${attempt}/${maxRetries})`);
+      
+      const pageData = await attemptGetPageContent();
+      console.log('Successfully got page content:', pageData.title);
+      return pageData;
+      
+    } catch (error) {
+      console.warn(`Attempt ${attempt} failed:`, error.message);
+      lastError = error;
+      
+      if (attempt < maxRetries) {
+        // Wait before retry, and try to ensure content script is loaded
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await ensureContentScriptLoaded();
+      }
+    }
+  }
+  
+  // All attempts failed
+  throw new Error(`Failed to get page content after ${maxRetries} attempts. Last error: ${lastError.message}`);
+}
+
+// Single attempt to get page content
+function attemptGetPageContent() {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error('Request timed out'));
-    }, 10000);
+      reject(new Error('Request timed out after 8 seconds'));
+    }, 8000);
     
     chrome.runtime.sendMessage(
       { type: "getPageContent" },
@@ -54,256 +87,256 @@ async function getPageContent() {
         clearTimeout(timeout);
         
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else if (response?.error) {
-          reject(new Error(response.error));
-        } else if (response?.content) {
-          resolve(response);
-        } else {
-          reject(new Error('No content received'));
+          reject(new Error(`Chrome runtime error: ${chrome.runtime.lastError.message}`));
+          return;
         }
+        
+        if (!response) {
+          reject(new Error('No response received from background script'));
+          return;
+        }
+        
+        if (response.error) {
+          reject(new Error(`Background script error: ${response.error}`));
+          return;
+        }
+        
+        if (!response.content || response.content.trim().length === 0) {
+          reject(new Error('No content extracted from the page'));
+          return;
+        }
+        
+        resolve(response);
       }
     );
   });
 }
 
-// Extract date candidates with pattern recognition
-function extractDateCandidates(content) {
-  const candidates = [];
-  const seen = new Set(); // Deduplicate
+// Ensure content script is loaded
+async function ensureContentScriptLoaded() {
+  try {
+    // Get the active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    if (!tab) {
+      throw new Error('No active tab found');
+    }
+    
+    console.log('Checking content script on tab:', tab.url);
+    
+    // Try to inject content script if it's not loaded
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          // Check if content script is already loaded
+          if (!window.timelineExtractorLoaded) {
+            console.log('Content script not detected, may need manual reload');
+          }
+          return window.timelineExtractorLoaded || false;
+        }
+      });
+    } catch (scriptError) {
+      console.warn('Could not check/inject content script:', scriptError);
+    }
+    
+  } catch (error) {
+    console.warn('Error ensuring content script loaded:', error);
+  }
+}
+
+// Extract precise date matches with highlighted context
+function extractPreciseDateMatches(content) {
+  const matches = [];
+  const seen = new Set(); // Prevent duplicates
   
-  // Split into sentences for context
-  const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 15);
-  
-  // Date patterns with confidence scoring
-  const patterns = [
-    // High confidence - explicit dates
+  // Comprehensive date patterns with exact matching
+  const datePatterns = [
+    // Full dates with months
     {
       regex: /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(19|20)\d{2}\b/gi,
       type: 'full_date',
-      confidence: 0.95
+      priority: 1
     },
     {
-      regex: /\b\d{1,2}[\/\-]\d{1,2}[\/\-](19|20)?\d{2}\b/g,
+      regex: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},?\s+(19|20)\d{2}\b/gi,
+      type: 'short_date',
+      priority: 1
+    },
+    // Numeric dates
+    {
+      regex: /\b\d{1,2}[\/\-]\d{1,2}[\/\-](19|20)\d{2}\b/g,
       type: 'numeric_date',
-      confidence: 0.90
+      priority: 1
     },
     {
-      regex: /\b(19|20)\d{2}\b/g,
-      type: 'year',
-      confidence: 0.85
+      regex: /\b(19|20)\d{2}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g,
+      type: 'iso_date',
+      priority: 1
     },
-    // Medium confidence - contextual dates
+    // Years with context
     {
-      regex: /\b(early|mid|late)\s+(19|20)\d{2}s?\b/gi,
-      type: 'period',
-      confidence: 0.75
+      regex: /\b(in|during|since|from|until|by|around|circa|about)\s+(19|20)\d{2}\b/gi,
+      type: 'year_context',
+      priority: 2
     },
+    // Standalone years (be more selective)
     {
-      regex: /\b(during|in|since|until|by|from)\s+(19|20)\d{2}\b/gi,
-      type: 'contextual',
-      confidence: 0.70
+      regex: /\b(19[0-9]{2}|20[0-2][0-9])\b/g,
+      type: 'year_only',
+      priority: 3
     },
-    // Lower confidence - relative dates (need AI)
+    // Ancient/BC dates
     {
-      regex: /\b(recently|soon|later|eventually|nowadays|currently)\b/gi,
-      type: 'relative',
-      confidence: 0.30
+      regex: /\b\d{1,4}\s*(BC|BCE|AD|CE)\b/gi,
+      type: 'ancient_date',
+      priority: 1
     },
+    // Day names with dates
     {
-      regex: /\b(next|last|this|previous)\s+(week|month|year|decade|century)\b/gi,
-      type: 'relative_period',
-      confidence: 0.40
+      regex: /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)[,\s]+(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?\d{1,2}(?:st|nd|rd|th)?,?\s+(19|20)\d{2}\b/gi,
+      type: 'day_date',
+      priority: 1
     }
   ];
   
-  // Process each sentence
-  sentences.forEach((sentence, sentenceIndex) => {
-    patterns.forEach(pattern => {
-      const matches = [...sentence.matchAll(pattern.regex)];
+  // Process each pattern
+  datePatterns.forEach(pattern => {
+    const patternMatches = [...content.matchAll(pattern.regex)];
+    
+    patternMatches.forEach(match => {
+      const dateText = match[0];
+      const startPos = match.index;
+      const endPos = startPos + dateText.length;
       
-      matches.forEach(match => {
-        const dateText = match[0];
-        const contextKey = sentence.substring(0, 100).toLowerCase();
-        
-        // Skip duplicates
-        if (seen.has(contextKey)) return;
-        seen.add(contextKey);
-        
-        // Get surrounding context
-        const contextStart = Math.max(0, sentenceIndex - 1);
-        const contextEnd = Math.min(sentences.length - 1, sentenceIndex + 1);
-        const fullContext = sentences.slice(contextStart, contextEnd + 1).join('. ');
-        
-        candidates.push({
-          dateText,
-          sentence,
-          context: fullContext,
+      // Extract 100 characters before and after the match
+      const contextStart = Math.max(0, startPos - 100);
+      const contextEnd = Math.min(content.length, endPos + 100);
+      const context = content.substring(contextStart, contextEnd);
+      
+      // Create unique key to avoid duplicates
+      const contextKey = `${dateText}-${context.substring(0, 50)}`.toLowerCase().replace(/\s+/g, ' ');
+      
+      if (seen.has(contextKey)) return;
+      seen.add(contextKey);
+      
+      // Validate the match isn't just noise
+      if (isValidDateMatch(context, dateText)) {
+        matches.push({
+          dateText: dateText,
+          context: context.trim(),
+          fullContext: getExpandedContext(content, startPos, endPos),
           type: pattern.type,
-          confidence: pattern.confidence,
-          position: match.index,
-          sentenceIndex
+          priority: pattern.priority,
+          position: startPos
         });
-      });
+      }
     });
   });
   
-  // Sort by confidence and limit
-  return candidates
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 25); // Process top 25 candidates
+  // Sort by priority (1 = highest) then by position
+  return matches
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.position - b.position;
+    })
+    .slice(0, 15); // Limit to 15 best matches
 }
 
-// Hybrid processing: local parsing + AI for complex cases
-async function processEventsHybrid(candidates, pageTitle) {
-  const events = [];
-  const processedDates = new Set();
-  
-  // Step 1: Process high-confidence dates locally (>= 0.7)
-  const localCandidates = candidates.filter(c => c.confidence >= 0.7);
-  const complexCandidates = candidates.filter(c => c.confidence < 0.7);
-  
-  console.log(`Processing ${localCandidates.length} locally, ${complexCandidates.length} with AI`);
-  
-  // Local processing
-  showStatus('Processing explicit dates...', 'loading');
-  localCandidates.forEach(candidate => {
-    const event = parseLocalDate(candidate);
-    if (event && !processedDates.has(event.date)) {
-      events.push(event);
-      processedDates.add(event.date);
-    }
-  });
-  
-  // AI processing for complex cases
-  if (complexCandidates.length > 0) {
-    showStatus('Processing complex dates with AI...', 'loading');
-    
-    try {
-      const aiEvents = await processWithAI(complexCandidates, pageTitle);
-      aiEvents.forEach(event => {
-        if (event && !processedDates.has(event.date)) {
-          events.push(event);
-          processedDates.add(event.date);
-        }
-      });
-    } catch (aiError) {
-      console.warn('AI processing failed:', aiError);
-      // Continue with local results only
-    }
-  }
-  
-  // Sort chronologically and return
-  return events
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
-    .slice(0, 20);
-}
-
-// Parse high-confidence dates locally
-function parseLocalDate(candidate) {
-  const { dateText, context, type } = candidate;
-  
-  let parsedDate = null;
-  let title = '';
-  
-  try {
-    // Parse different date formats
-    switch (type) {
-      case 'full_date':
-        parsedDate = new Date(dateText);
-        break;
-        
-      case 'numeric_date':
-        // Handle different formats
-        const normalized = dateText.replace(/[-]/g, '/');
-        parsedDate = new Date(normalized);
-        break;
-        
-      case 'year':
-        const year = dateText.match(/\b(19|20)\d{2}\b/)[0];
-        parsedDate = new Date(`${year}-01-01`);
-        break;
-        
-      case 'period':
-        // "early 1990s" -> "1990-01-01"
-        const periodYear = dateText.match(/\b(19|20)\d{2}/)[0];
-        parsedDate = new Date(`${periodYear}-01-01`);
-        break;
-        
-      case 'contextual':
-        // "during 1945" -> "1945-01-01"
-        const contextYear = dateText.match(/\b(19|20)\d{2}/)[0];
-        parsedDate = new Date(`${contextYear}-01-01`);
-        break;
-    }
-    
-    // Validate date
-    if (!parsedDate || isNaN(parsedDate.getTime())) {
-      return null;
-    }
-    
-    // Extract meaningful title from context
-    title = extractEventTitle(context, dateText);
-    
-    return {
-      date: parsedDate.toISOString().split('T')[0],
-      title: title.substring(0, 80),
-      description: context.substring(0, 200),
-      confidence: candidate.confidence,
-      source: 'local'
-    };
-    
-  } catch (error) {
-    console.warn('Local parsing failed:', dateText, error);
-    return null;
-  }
-}
-
-// Extract event title from context
-function extractEventTitle(context, dateText) {
-  // Remove the date text itself
-  let cleanContext = context.replace(new RegExp(dateText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
-  
-  // Look for meaningful phrases
-  const titlePatterns = [
-    // Events and actions
-    /\b(was|were|became|started|began|ended|finished|launched|founded|established|created|built|died|born|elected|appointed|signed|declared|announced)\s+[^.!?]+/gi,
-    // Proper nouns and important phrases
-    /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g,
-    // Historical events
-    /\b(war|battle|treaty|revolution|independence|constitution|law|act|movement|crisis|period)\b[^.!?]*/gi
+// Validate that a date match is meaningful
+function isValidDateMatch(context, dateText) {
+  // Skip if it's just navigation or metadata
+  const lowContext = context.toLowerCase();
+  const skipPatterns = [
+    'copyright', 'all rights reserved', 'terms of service', 'privacy policy',
+    'home', 'about', 'contact', 'menu', 'search', 'login', 'sign up',
+    'next page', 'previous page', 'page 1', 'page 2', 
+    'posted on', 'updated on', 'last modified',
+    'isbn', 'doi:', 'http://', 'https://'
   ];
   
-  for (const pattern of titlePatterns) {
-    const matches = cleanContext.match(pattern);
-    if (matches && matches[0]) {
-      let title = matches[0].trim();
-      // Clean up
-      title = title
-        .replace(/^(was|were|became|started|began|ended|in|on|at|during|the|a|an)\s+/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      
-      if (title.length > 10) {
-        return title;
-      }
+  if (skipPatterns.some(pattern => lowContext.includes(pattern))) {
+    return false;
+  }
+  
+  // Skip standalone years that don't have historical context
+  if (dateText.match(/^\d{4}$/)) {
+    const historicalWords = ['war', 'battle', 'born', 'died', 'founded', 'established', 'began', 'ended', 'revolution', 'independence', 'treaty', 'elected', 'invented', 'discovered'];
+    if (!historicalWords.some(word => lowContext.includes(word))) {
+      return false;
     }
   }
   
-  // Fallback: use first meaningful sentence fragment
-  const sentences = cleanContext.split(/[.!?]+/);
-  for (const sentence of sentences) {
-    const clean = sentence.trim();
-    if (clean.length > 15 && clean.length < 100) {
-      return clean;
-    }
-  }
-  
-  return 'Historical Event';
+  // Must have some substantial text around it
+  return context.trim().length > 30;
 }
 
-// Process complex dates with AI
-async function processWithAI(candidates, pageTitle) {
+// Get expanded context for better AI processing
+function getExpandedContext(content, startPos, endPos) {
+  // Find sentence boundaries around the match
+  const beforeText = content.substring(Math.max(0, startPos - 300), startPos);
+  const afterText = content.substring(endPos, Math.min(content.length, endPos + 300));
+  
+  // Find last sentence start before match
+  const sentenceStart = Math.max(
+    beforeText.lastIndexOf('. '),
+    beforeText.lastIndexOf('! '),
+    beforeText.lastIndexOf('? '),
+    0
+  );
+  
+  // Find first sentence end after match
+  const sentenceEnd = Math.min(
+    afterText.indexOf('. ') + 1 || afterText.length,
+    afterText.indexOf('! ') + 1 || afterText.length,
+    afterText.indexOf('? ') + 1 || afterText.length
+  );
+  
+  const expandedStart = Math.max(0, startPos - 300 + sentenceStart);
+  const expandedEnd = Math.min(content.length, endPos + sentenceEnd);
+  
+  return content.substring(expandedStart, expandedEnd).trim();
+}
+
+// Process precise matches in very small batches
+async function processPreciseMatches(matches, pageTitle) {
+  const allEvents = [];
+  const batchSize = 3; // Very small batches for reliability
+  
+  for (let i = 0; i < matches.length; i += batchSize) {
+    const batch = matches.slice(i, i + batchSize);
+    const batchNum = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(matches.length / batchSize);
+    
+    showStatus(`Processing batch ${batchNum}/${totalBatches} (${batch.length} events)...`, 'loading');
+    
+    try {
+      const events = await processSmallBatch(batch, pageTitle);
+      console.log(`Batch ${batchNum} produced ${events.length} events`);
+      
+      if (events.length > 0) {
+        allEvents.push(...events);
+      }
+      
+      // Delay between batches to avoid overwhelming the API
+      if (i + batchSize < matches.length) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+      
+    } catch (error) {
+      console.warn(`Batch ${batchNum} failed:`, error);
+      // Continue with remaining batches
+    }
+  }
+  
+  console.log(`Total events from all batches: ${allEvents.length}`);
+  
+  // Remove duplicates and sort chronologically
+  return deduplicateAndSort(allEvents);
+}
+
+// Process a small batch with focused AI prompting
+async function processSmallBatch(matches, pageTitle) {
   if (!window.ai?.writer) {
     console.warn('Writer API not available');
     return [];
@@ -323,69 +356,159 @@ async function processWithAI(candidates, pageTitle) {
       length: 'short'
     });
     
-    // Create focused prompt with just the complex snippets
-    const snippetText = candidates
-      .slice(0, 10) // Limit to avoid token overflow
-      .map((c, i) => `${i + 1}. "${c.context}" (Contains: "${c.dateText}")`)
-      .join('\n');
+    // Create very focused prompts for each match
+    const contextBlocks = matches.map((match, index) => {
+      return `Event ${index + 1}:
+Date Pattern: "${match.dateText}"
+Context: "${match.fullContext}"
+Type: ${match.type}`;
+    }).join('\n\n');
     
-    const currentDate = new Date().toISOString().split('T')[0];
-    const prompt = `Parse these date references into timeline events. Today's date: ${currentDate}
+    const prompt = `Extract timeline events from these precise date matches. Focus on the specific historical event or fact mentioned.
 
 Page: ${pageTitle}
 
-Date snippets:
-${snippetText}
+Date Matches:
+${contextBlocks}
 
-Return ONLY valid JSON array:
-[{"date": "YYYY-MM-DD", "title": "Event title (max 80 chars)", "description": "Brief description (max 200 chars)"}]`;
+Rules:
+- Extract ONLY the specific event mentioned around each date
+- Create clear, factual titles (30-70 chars)
+- Provide brief descriptions (80-150 chars)  
+- Use the exact date when clear, or best approximation
+- Skip if no clear historical event is mentioned
+- For ancient dates (BC/BCE), preserve the original format
+
+Return ONLY valid JSON:
+[{"date": "YYYY-MM-DD", "title": "Event title", "description": "Brief description"}]
+
+For BC dates use negative years: {"date": "-0100-01-01", "title": "Event in 100 BC", "description": "Description"}`;
+
+    console.log('Sending prompt to AI:', prompt.substring(0, 200) + '...');
     
     const result = await session.write(prompt);
-    session.destroy();
+    console.log('AI response received:', result.substring(0, 200) + '...');
     
+    session.destroy();
     return parseAIResponse(result);
     
   } catch (error) {
-    console.error('AI processing failed:', error);
+    console.error('Small batch AI processing failed:', error);
     if (session) session.destroy();
     return [];
   }
 }
 
-// Parse AI response into events
+// Parse AI response with better error handling and validation
 function parseAIResponse(response) {
   try {
-    // Clean response
+    // Clean the response
     let clean = response.trim();
+    
+    // Remove markdown formatting
     clean = clean.replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+    clean = clean.replace(/```/g, '');
     
     // Extract JSON array
     const start = clean.indexOf('[');
     const end = clean.lastIndexOf(']') + 1;
-    if (start !== -1 && end > start) {
-      clean = clean.substring(start, end);
+    
+    if (start === -1 || end <= start) {
+      console.warn('No JSON array found in response:', clean);
+      return [];
     }
     
-    const events = JSON.parse(clean);
+    const jsonStr = clean.substring(start, end);
+    console.log('Parsing JSON:', jsonStr);
     
-    if (Array.isArray(events)) {
-      return events
-        .filter(e => e.date && e.title && !isNaN(new Date(e.date).getTime()))
-        .map(e => ({
-          ...e,
-          title: e.title.substring(0, 80),
-          description: (e.description || '').substring(0, 200),
-          source: 'ai'
-        }));
+    const events = JSON.parse(jsonStr);
+    
+    if (!Array.isArray(events)) {
+      console.warn('Parsed result is not an array');
+      return [];
     }
+    
+    // Validate and clean events
+    return events
+      .filter(event => {
+        if (!event.date || !event.title) {
+          console.warn('Event missing date or title:', event);
+          return false;
+        }
+        
+        // Validate date format
+        let testDate;
+        if (event.date.startsWith('-')) {
+          // BC date - just check it's reasonable
+          const year = parseInt(event.date.split('-')[1]);
+          if (isNaN(year) || year > 9999) return false;
+          testDate = new Date('0001-01-01'); // Placeholder for BC dates
+        } else {
+          testDate = new Date(event.date);
+          if (isNaN(testDate.getTime())) {
+            console.warn('Invalid date:', event.date);
+            return false;
+          }
+        }
+        
+        // Filter out bad titles
+        const titleLower = event.title.toLowerCase();
+        const badPatterns = ['wikipedia', 'disambiguation', 'copyright', 'all rights', 'home page'];
+        if (badPatterns.some(pattern => titleLower.includes(pattern))) {
+          console.warn('Filtered out bad title:', event.title);
+          return false;
+        }
+        
+        return true;
+      })
+      .map(event => ({
+        date: event.date,
+        title: event.title.substring(0, 80).trim(),
+        description: (event.description || event.title).substring(0, 200).trim(),
+        confidence: 0.90,
+        source: 'ai'
+      }));
+      
   } catch (error) {
-    console.warn('Failed to parse AI response:', error);
+    console.error('Failed to parse AI response:', error);
+    console.log('Raw response that failed:', response);
+    return [];
   }
-  
-  return [];
 }
 
-// Display timeline with expandable format
+// Deduplicate events and sort chronologically
+function deduplicateAndSort(events) {
+  // Remove duplicates based on similar dates and titles
+  const uniqueEvents = [];
+  const seen = new Set();
+  
+  events.forEach(event => {
+    const key = `${event.date}-${event.title.substring(0, 30).toLowerCase().replace(/\s+/g, '')}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueEvents.push(event);
+    }
+  });
+  
+  // Sort chronologically (handle BC dates)
+  return uniqueEvents.sort((a, b) => {
+    const dateA = a.date.startsWith('-') ? new Date(`0001${a.date.substring(5)}`) : new Date(a.date);
+    const dateB = b.date.startsWith('-') ? new Date(`0001${b.date.substring(5)}`) : new Date(b.date);
+    
+    // BC dates should come first
+    if (a.date.startsWith('-') && !b.date.startsWith('-')) return -1;
+    if (!a.date.startsWith('-') && b.date.startsWith('-')) return 1;
+    
+    if (a.date.startsWith('-') && b.date.startsWith('-')) {
+      // For BC dates, more negative (earlier) comes first
+      return a.date.localeCompare(b.date);
+    }
+    
+    return dateA - dateB;
+  });
+}
+
+// Display timeline with better BC date handling
 function displayTimeline(events) {
   if (!events || events.length === 0) {
     timelineDiv.innerHTML = `
@@ -403,26 +526,25 @@ function displayTimeline(events) {
   events.forEach((event, index) => {
     const formattedDate = formatDate(event.date);
     const sourceIcon = event.source === 'local' ? '⚡' : '🤖';
-    const confidenceClass = event.confidence > 0.8 ? 'high' : event.confidence > 0.5 ? 'medium' : 'low';
     
     html += `
-      <div class="timeline-event" data-confidence="${confidenceClass}">
+      <div class="timeline-event">
         <div class="event-header" onclick="toggleEvent(${index})">
           <div class="event-main">
             <span class="event-date">${formattedDate}</span>
             <span class="event-title">${escapeHtml(event.title)}</span>
           </div>
           <div class="event-controls">
-            <span class="source-indicator" title="${event.source === 'local' ? 'Parsed locally' : 'Processed with AI'}">${sourceIcon}</span>
+            <span class="source-indicator" title="Processed with AI">${sourceIcon}</span>
             <button class="expand-btn" id="btn-${index}">
               <span class="expand-icon">▼</span>
             </button>
           </div>
         </div>
         <div class="event-details" id="details-${index}" style="display: none;">
-          <div class="event-description">${escapeHtml(event.description || 'No additional details available.')}</div>
+          <div class="event-description">${escapeHtml(event.description)}</div>
           <div class="event-meta">
-            <small>Confidence: ${Math.round(event.confidence * 100)}% | Source: ${event.source === 'local' ? 'Local parsing' : 'AI processing'}</small>
+            <small>Confidence: ${Math.round(event.confidence * 100)}% | AI Processed</small>
           </div>
         </div>
       </div>
@@ -431,6 +553,29 @@ function displayTimeline(events) {
   
   html += '</div>';
   timelineDiv.innerHTML = html;
+}
+
+// Format dates including BC dates
+function formatDate(dateString) {
+  try {
+    if (dateString.startsWith('-')) {
+      // Handle BC dates
+      const parts = dateString.substring(1).split('-');
+      const year = parseInt(parts[0]);
+      return `${year} BC`;
+    }
+    
+    const date = new Date(dateString);
+    if (isNaN(date)) return dateString;
+    
+    return date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  } catch (e) {
+    return dateString;
+  }
 }
 
 // Toggle event details
@@ -463,22 +608,6 @@ function showStatus(message, type) {
     setTimeout(() => {
       statusDiv.style.display = 'none';
     }, 4000);
-  }
-}
-
-// Format dates nicely
-function formatDate(dateString) {
-  try {
-    const date = new Date(dateString);
-    if (isNaN(date)) return dateString;
-    
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-  } catch (e) {
-    return dateString;
   }
 }
 

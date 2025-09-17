@@ -1,5 +1,6 @@
 // Mark that content script is loaded
 window.timelineExtractorLoaded = true;
+console.log('Timeline Extractor content script loading on:', window.location.href);
 
 // Content extraction cache
 let contentCache = {
@@ -10,9 +11,11 @@ let contentCache = {
 
 // Listen for content extraction requests
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('Content script: Received message:', message.type);
+  
   if (message.type === "getPageContent") {
     try {
-      console.log('Content script: Extracting page content');
+      console.log('Content script: Processing getPageContent request');
       
       const currentUrl = window.location.href;
       const now = Date.now();
@@ -34,8 +37,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       
       // Extract fresh content
+      console.log('Content script: Extracting fresh content');
       const pageContent = extractPageContent();
       const pageTitle = document.title || "Untitled Page";
+      
+      if (!pageContent || pageContent.trim().length === 0) {
+        throw new Error('No content could be extracted from this page');
+      }
       
       // Update cache
       contentCache = {
@@ -44,7 +52,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         timestamp: now
       };
       
-      console.log(`Content script: Extracted ${pageContent.length} characters`);
+      console.log(`Content script: Successfully extracted ${pageContent.length} characters`);
       
       const response = {
         title: pageTitle,
@@ -57,7 +65,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(response);
       
     } catch (error) {
-      console.error('Content extraction error:', error);
+      console.error('Content script: Content extraction error:', error);
       sendResponse({
         error: `Content extraction failed: ${error.message}`,
         title: document.title || "Error",
@@ -71,8 +79,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Efficient content extraction
+// Efficient content extraction with better error handling
 function extractPageContent() {
+  console.log('Content script: Starting content extraction');
+  
   // Priority selectors for different site types
   const contentSelectors = [
     // Wikipedia and wikis
@@ -111,6 +121,7 @@ function extractPageContent() {
   for (const selector of contentSelectors) {
     try {
       const elements = document.querySelectorAll(selector);
+      console.log(`Content script: Found ${elements.length} elements for selector: ${selector}`);
       
       for (const element of elements) {
         if (!element) continue;
@@ -118,74 +129,87 @@ function extractPageContent() {
         const content = extractTextFromElement(element);
         const score = scoreContent(content);
         
-        if (score > bestScore) {
+        if (score > bestScore && content.length > 100) {
           bestContent = content;
           bestScore = score;
+          console.log(`Content script: New best content (${content.length} chars, score: ${score}) from selector: ${selector}`);
         }
       }
     } catch (e) {
-      // Skip failed selectors
+      console.warn(`Content script: Selector failed: ${selector}`, e);
       continue;
     }
   }
   
   // Fallback to body if no good content found
-  if (bestScore < 100) {
+  if (bestScore < 100 || bestContent.length < 200) {
+    console.log('Content script: Using body fallback');
     const bodyContent = extractTextFromElement(document.body);
     const bodyScore = scoreContent(bodyContent);
     
-    if (bodyScore > bestScore) {
+    if (bodyScore > bestScore || bestContent.length < 200) {
       bestContent = bodyContent;
+      console.log(`Content script: Using body content (${bodyContent.length} chars)`);
     }
   }
   
-  return bestContent || "No content could be extracted from this page";
+  if (!bestContent || bestContent.trim().length === 0) {
+    throw new Error("No meaningful content could be extracted from this page");
+  }
+  
+  console.log(`Content script: Final content extracted: ${bestContent.length} characters`);
+  return bestContent;
 }
 
 // Extract clean text from a DOM element
 function extractTextFromElement(element) {
   if (!element) return '';
   
-  // Clone to avoid modifying original
-  const clone = element.cloneNode(true);
-  
-  // Remove unwanted elements
-  const unwantedSelectors = [
-    // Scripts and styles
-    'script', 'style', 'noscript',
+  try {
+    // Clone to avoid modifying original
+    const clone = element.cloneNode(true);
     
-    // Navigation
-    'nav', 'header', 'footer', '.navigation', '.nav', '.menu',
-    '.breadcrumb', '.pagination',
+    // Remove unwanted elements
+    const unwantedSelectors = [
+      // Scripts and styles
+      'script', 'style', 'noscript',
+      
+      // Navigation
+      'nav', 'header', 'footer', '.navigation', '.nav', '.menu',
+      '.breadcrumb', '.pagination',
+      
+      // Ads and social
+      '.ad', '.ads', '.advertisement', '.social-share', '.share-buttons',
+      '.newsletter', '.subscription', '.popup', '.modal',
+      
+      // Comments and metadata
+      '.comments', '.comment', '.comment-section',
+      '.metadata', '.byline', '.tags', '.categories',
+      
+      // Sidebars and related content
+      '.sidebar', '.related', '.recommended', '.more-articles',
+      '[role="complementary"]', '[role="banner"]', '[role="contentinfo"]'
+    ];
     
-    // Ads and social
-    '.ad', '.ads', '.advertisement', '.social-share', '.share-buttons',
-    '.newsletter', '.subscription', '.popup', '.modal',
+    // Remove unwanted elements
+    unwantedSelectors.forEach(selector => {
+      try {
+        const elements = clone.querySelectorAll(selector);
+        elements.forEach(el => el.remove());
+      } catch (e) {
+        // Skip if selector fails
+      }
+    });
     
-    // Comments and metadata
-    '.comments', '.comment', '.comment-section',
-    '.metadata', '.byline', '.tags', '.categories',
+    // Get text content
+    const text = clone.innerText || clone.textContent || '';
     
-    // Sidebars and related content
-    '.sidebar', '.related', '.recommended', '.more-articles',
-    '[role="complementary"]', '[role="banner"]', '[role="contentinfo"]'
-  ];
-  
-  // Remove unwanted elements
-  unwantedSelectors.forEach(selector => {
-    try {
-      const elements = clone.querySelectorAll(selector);
-      elements.forEach(el => el.remove());
-    } catch (e) {
-      // Skip if selector fails
-    }
-  });
-  
-  // Get text content
-  const text = clone.innerText || clone.textContent || '';
-  
-  // Clean and return
-  return cleanExtractedText(text);
+    // Clean and return
+    return cleanExtractedText(text);
+  } catch (error) {
+    console.warn('Content script: Error extracting text from element:', error);
+    return '';
+  }
 }
 
 // Clean extracted text
@@ -218,13 +242,14 @@ function cleanExtractedText(text) {
 function scoreContent(text) {
   if (!text) return 0;
   
-  let score = text.length * 0.1; // Base score from length
+  let score = Math.min(text.length * 0.1, 1000); // Base score from length, capped
   
   // Bonus for date patterns (key for timeline extraction)
   const datePatterns = [
     /\b(19|20)\d{2}\b/g, // Years
     /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(19|20)\d{2}\b/gi, // Full dates
-    /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g // Numeric dates
+    /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g, // Numeric dates
+    /\b\d{1,4}\s*(BC|BCE|AD|CE)\b/gi // Ancient dates
   ];
   
   datePatterns.forEach(pattern => {
@@ -267,15 +292,19 @@ const observer = new MutationObserver(() => {
   if (window.location.href !== currentUrl) {
     contentCache = { url: null, content: null, timestamp: null };
     currentUrl = window.location.href;
-    console.log('Content script: Page changed, cache cleared');
+    console.log('Content script: Page changed, cache cleared:', currentUrl);
   }
 });
 
 // Start observing for SPA navigation
-observer.observe(document, { 
-  subtree: true, 
-  childList: true, 
-  attributes: false 
-});
+try {
+  observer.observe(document, { 
+    subtree: true, 
+    childList: true, 
+    attributes: false 
+  });
+} catch (error) {
+  console.warn('Content script: Could not start mutation observer:', error);
+}
 
-console.log('Timeline Extractor content script loaded:', window.location.href);
+console.log('Timeline Extractor content script fully loaded on:', window.location.href);
