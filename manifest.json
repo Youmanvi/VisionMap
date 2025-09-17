@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Timeline Extractor",
+  "version": "1.0",
+  "description": "Extract timelines from web pages using AI",
+  
+  "permissions": [
+    "activeTab",
+    "sidePanel",
+    "scripting"
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"]
+  }],
+  
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  
+  "action": {
+    "default_title": "Extract Timeline"
+  },
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
