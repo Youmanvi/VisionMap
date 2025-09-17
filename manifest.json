@@ -1,14 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Timeline Extractor",
-  "version": "1.0",
-  "description": "Extract timelines from web pages using AI",
+  "version": "2.0",
+  "description": "Extract timelines from web pages using AI (Gemini API + Chrome AI fallback)",
   
   "permissions": [
     "activeTab",
     "sidePanel",
     "scripting",
     "tabs"
+  ],
+  
+  "host_permissions": [
+    "<all_urls>",
+    "https://generativelanguage.googleapis.com/*"
   ],
   
   "background": {
@@ -26,7 +31,7 @@
   },
   
   "action": {
-    "default_title": "Extract Timeline"
+    "default_title": "Extract Timeline with AI"
   },
   
   "icons": {
@@ -35,7 +40,7 @@
     "128": "icons/icon128.png"
   },
   
-  "host_permissions": [
-    "<all_urls>"
-  ]
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }

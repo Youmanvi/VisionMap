@@ -5,6 +5,58 @@ const timelineDiv = document.getElementById('timeline');
 
 // Cache for processed results
 let processedEvents = [];
+let aiSession = null;
+
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', async () => {
+  await checkAIAvailability();
+});
+
+// Check if Chrome AI APIs are available
+async function checkAIAvailability() {
+  try {
+    // Check if LanguageModel is available (the correct API)
+    if (!('LanguageModel' in self)) {
+      throw new Error('LanguageModel API not available. Please enable chrome://flags/#prompt-api-for-gemini-nano and restart Chrome.');
+    }
+
+    console.log('LanguageModel API detected');
+    
+    // Check availability (this is the correct method according to the docs)
+    const available = await LanguageModel.availability();
+    console.log('LanguageModel availability:', available);
+    
+    if (available === 'unavailable') {
+      throw new Error('LanguageModel is unavailable on this device/browser');
+    } else if (available === 'downloadable') {
+      showStatus('AI model needs to be downloaded. Click Extract to start download.', 'loading');
+      extractBtn.disabled = false; // Allow user to trigger download
+    } else if (available === 'downloading') {
+      showStatus('AI model is downloading... Please wait and try again in a few minutes.', 'loading');
+      // Check periodically if download completes
+      const checkInterval = setInterval(async () => {
+        try {
+          const newAvailability = await LanguageModel.availability();
+          if (newAvailability === 'available') {
+            clearInterval(checkInterval);
+            showStatus('AI model ready!', 'success');
+            extractBtn.disabled = false;
+          }
+        } catch (e) {
+          console.warn('Error checking availability:', e);
+        }
+      }, 10000); // Check every 10 seconds
+    } else if (available === 'available') {
+      showStatus('AI ready for timeline extraction', 'success');
+      extractBtn.disabled = false;
+    }
+    
+  } catch (error) {
+    console.error('AI availability check failed:', error);
+    showStatus(`AI Error: ${error.message}`, 'error');
+    extractBtn.disabled = true;
+  }
+}
 
 // When extract button is clicked
 extractBtn.addEventListener('click', async () => {
@@ -18,30 +70,72 @@ async function extractTimeline() {
     
     // Step 1: Get page content
     const pageData = await getPageContent();
+    console.log(`Got page content: ${pageData.contentLength} characters`);
     
-    // Step 2: Precise preprocessing - find and highlight exact date matches
-    showStatus('Finding precise date matches...', 'loading');
+    // Step 2: Find date matches
+    showStatus('Finding date patterns...', 'loading');
     const dateMatches = extractPreciseDateMatches(pageData.content);
     
-    console.log(`Found ${dateMatches.length} precise date matches`);
+    console.log(`Found ${dateMatches.length} date matches`);
     
     if (dateMatches.length === 0) {
-      throw new Error('No date patterns found in the content');
+      throw new Error('No date patterns found in the content. Try a page with historical information, news articles, or biographical content.');
     }
     
-    // Step 3: Process in small batches with exact context
+    // Step 3: Create AI session
+    showStatus('Creating AI session...', 'loading');
+    await createAISession();
+    
+    // Step 4: Process matches with AI
     const events = await processPreciseMatches(dateMatches, pageData.title);
     
-    // Step 4: Cache and display
+    // Step 5: Display results
     processedEvents = events;
     displayTimeline(events);
-    showStatus(`Extracted ${events.length} timeline events!`, 'success');
+    showStatus(`Successfully extracted ${events.length} timeline events!`, 'success');
     
   } catch (error) {
     console.error('Timeline extraction error:', error);
-    showStatus('Error: ' + error.message, 'error');
+    showStatus(`Error: ${error.message}`, 'error');
   } finally {
     extractBtn.disabled = false;
+    // Clean up AI session
+    if (aiSession) {
+      try {
+        aiSession.destroy();
+        aiSession = null;
+        console.log('AI session destroyed');
+      } catch (e) {
+        console.warn('Error destroying AI session:', e);
+      }
+    }
+  }
+}
+
+// Create AI session
+async function createAISession() {
+  try {
+    if (aiSession) {
+      aiSession.destroy();
+    }
+    
+    // Create session using the correct LanguageModel API
+    aiSession = await LanguageModel.create({
+      temperature: 0.3,
+      topK: 20,
+      initialPrompts: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that extracts timeline events from text. Always respond with valid JSON arrays containing date, title, and description fields.'
+        }
+      ]
+    });
+    
+    console.log('LanguageModel session created successfully');
+    
+  } catch (error) {
+    console.error('Failed to create AI session:', error);
+    throw new Error(`AI session creation failed: ${error.message}`);
   }
 }
 
@@ -52,34 +146,29 @@ async function getPageContent() {
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`Attempting to get page content (attempt ${attempt}/${maxRetries})`);
-      
+      console.log(`Getting page content (attempt ${attempt}/${maxRetries})`);
       const pageData = await attemptGetPageContent();
       console.log('Successfully got page content:', pageData.title);
       return pageData;
-      
     } catch (error) {
       console.warn(`Attempt ${attempt} failed:`, error.message);
       lastError = error;
       
       if (attempt < maxRetries) {
-        // Wait before retry, and try to ensure content script is loaded
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await ensureContentScriptLoaded();
       }
     }
   }
   
-  // All attempts failed
-  throw new Error(`Failed to get page content after ${maxRetries} attempts. Last error: ${lastError.message}`);
+  throw new Error(`Failed to get page content: ${lastError.message}`);
 }
 
 // Single attempt to get page content
 function attemptGetPageContent() {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error('Request timed out after 8 seconds'));
-    }, 8000);
+      reject(new Error('Request timed out after 10 seconds'));
+    }, 10000);
     
     chrome.runtime.sendMessage(
       { type: "getPageContent" },
@@ -97,7 +186,7 @@ function attemptGetPageContent() {
         }
         
         if (response.error) {
-          reject(new Error(`Background script error: ${response.error}`));
+          reject(new Error(response.error));
           return;
         }
         
@@ -112,45 +201,12 @@ function attemptGetPageContent() {
   });
 }
 
-// Ensure content script is loaded
-async function ensureContentScriptLoaded() {
-  try {
-    // Get the active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    
-    if (!tab) {
-      throw new Error('No active tab found');
-    }
-    
-    console.log('Checking content script on tab:', tab.url);
-    
-    // Try to inject content script if it's not loaded
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          // Check if content script is already loaded
-          if (!window.timelineExtractorLoaded) {
-            console.log('Content script not detected, may need manual reload');
-          }
-          return window.timelineExtractorLoaded || false;
-        }
-      });
-    } catch (scriptError) {
-      console.warn('Could not check/inject content script:', scriptError);
-    }
-    
-  } catch (error) {
-    console.warn('Error ensuring content script loaded:', error);
-  }
-}
-
-// Extract precise date matches with highlighted context
+// Extract precise date matches with context
 function extractPreciseDateMatches(content) {
   const matches = [];
-  const seen = new Set(); // Prevent duplicates
+  const seen = new Set();
   
-  // Comprehensive date patterns with exact matching
+  // Comprehensive date patterns
   const datePatterns = [
     // Full dates with months
     {
@@ -160,42 +216,36 @@ function extractPreciseDateMatches(content) {
     },
     {
       regex: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},?\s+(19|20)\d{2}\b/gi,
-      type: 'short_date',
+      type: 'short_date', 
       priority: 1
     },
     // Numeric dates
     {
       regex: /\b\d{1,2}[\/\-]\d{1,2}[\/\-](19|20)\d{2}\b/g,
       type: 'numeric_date',
-      priority: 1
+      priority: 2
     },
     {
       regex: /\b(19|20)\d{2}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g,
       type: 'iso_date',
-      priority: 1
+      priority: 2
     },
     // Years with context
     {
-      regex: /\b(in|during|since|from|until|by|around|circa|about)\s+(19|20)\d{2}\b/gi,
+      regex: /\b(in|during|since|from|until|by|around|circa|about|year)\s+(19|20)\d{2}\b/gi,
       type: 'year_context',
       priority: 2
     },
-    // Standalone years (be more selective)
+    // Historical years
     {
-      regex: /\b(19[0-9]{2}|20[0-2][0-9])\b/g,
-      type: 'year_only',
+      regex: /\b(19[0-9]{2}|20[0-2][0-9])\b(?=\s*[-–—]\s*|\s+(war|battle|revolution|independence|founded|established|born|died|elected|treaty|agreement|act|law))/gi,
+      type: 'historical_year',
       priority: 3
     },
-    // Ancient/BC dates
+    // Ancient dates
     {
       regex: /\b\d{1,4}\s*(BC|BCE|AD|CE)\b/gi,
       type: 'ancient_date',
-      priority: 1
-    },
-    // Day names with dates
-    {
-      regex: /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)[,\s]+(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?\d{1,2}(?:st|nd|rd|th)?,?\s+(19|20)\d{2}\b/gi,
-      type: 'day_date',
       priority: 1
     }
   ];
@@ -209,23 +259,22 @@ function extractPreciseDateMatches(content) {
       const startPos = match.index;
       const endPos = startPos + dateText.length;
       
-      // Extract 100 characters before and after the match
-      const contextStart = Math.max(0, startPos - 100);
-      const contextEnd = Math.min(content.length, endPos + 100);
+      // Get context around the match
+      const contextStart = Math.max(0, startPos - 150);
+      const contextEnd = Math.min(content.length, endPos + 150);
       const context = content.substring(contextStart, contextEnd);
       
-      // Create unique key to avoid duplicates
+      // Create unique key
       const contextKey = `${dateText}-${context.substring(0, 50)}`.toLowerCase().replace(/\s+/g, ' ');
       
       if (seen.has(contextKey)) return;
       seen.add(contextKey);
       
-      // Validate the match isn't just noise
+      // Validate the match
       if (isValidDateMatch(context, dateText)) {
         matches.push({
           dateText: dateText,
           context: context.trim(),
-          fullContext: getExpandedContext(content, startPos, endPos),
           type: pattern.type,
           priority: pattern.priority,
           position: startPos
@@ -234,81 +283,56 @@ function extractPreciseDateMatches(content) {
     });
   });
   
-  // Sort by priority (1 = highest) then by position
+  // Sort by priority and limit results
   return matches
     .sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority;
       return a.position - b.position;
     })
-    .slice(0, 15); // Limit to 15 best matches
+    .slice(0, 20); // Limit to 20 matches
 }
 
-// Validate that a date match is meaningful
+// Validate date matches
 function isValidDateMatch(context, dateText) {
-  // Skip if it's just navigation or metadata
   const lowContext = context.toLowerCase();
+  
+  // Skip navigation and metadata
   const skipPatterns = [
     'copyright', 'all rights reserved', 'terms of service', 'privacy policy',
     'home', 'about', 'contact', 'menu', 'search', 'login', 'sign up',
-    'next page', 'previous page', 'page 1', 'page 2', 
-    'posted on', 'updated on', 'last modified',
-    'isbn', 'doi:', 'http://', 'https://'
+    'posted on', 'updated on', 'last modified', 'page', 'next', 'previous'
   ];
   
   if (skipPatterns.some(pattern => lowContext.includes(pattern))) {
     return false;
   }
   
-  // Skip standalone years that don't have historical context
+  // For standalone years, require historical context
   if (dateText.match(/^\d{4}$/)) {
-    const historicalWords = ['war', 'battle', 'born', 'died', 'founded', 'established', 'began', 'ended', 'revolution', 'independence', 'treaty', 'elected', 'invented', 'discovered'];
+    const historicalWords = [
+      'war', 'battle', 'born', 'died', 'founded', 'established', 'began', 'ended', 
+      'revolution', 'independence', 'treaty', 'elected', 'invented', 'discovered',
+      'built', 'created', 'started', 'opened', 'closed', 'married', 'graduated'
+    ];
     if (!historicalWords.some(word => lowContext.includes(word))) {
       return false;
     }
   }
   
-  // Must have some substantial text around it
-  return context.trim().length > 30;
+  return context.trim().length > 50;
 }
 
-// Get expanded context for better AI processing
-function getExpandedContext(content, startPos, endPos) {
-  // Find sentence boundaries around the match
-  const beforeText = content.substring(Math.max(0, startPos - 300), startPos);
-  const afterText = content.substring(endPos, Math.min(content.length, endPos + 300));
-  
-  // Find last sentence start before match
-  const sentenceStart = Math.max(
-    beforeText.lastIndexOf('. '),
-    beforeText.lastIndexOf('! '),
-    beforeText.lastIndexOf('? '),
-    0
-  );
-  
-  // Find first sentence end after match
-  const sentenceEnd = Math.min(
-    afterText.indexOf('. ') + 1 || afterText.length,
-    afterText.indexOf('! ') + 1 || afterText.length,
-    afterText.indexOf('? ') + 1 || afterText.length
-  );
-  
-  const expandedStart = Math.max(0, startPos - 300 + sentenceStart);
-  const expandedEnd = Math.min(content.length, endPos + sentenceEnd);
-  
-  return content.substring(expandedStart, expandedEnd).trim();
-}
-
-// Process precise matches in very small batches
+// Process matches with AI in small batches
 async function processPreciseMatches(matches, pageTitle) {
   const allEvents = [];
-  const batchSize = 3; // Very small batches for reliability
+  const batchSize = 5; // Small batches for reliability
   
   for (let i = 0; i < matches.length; i += batchSize) {
     const batch = matches.slice(i, i + batchSize);
     const batchNum = Math.floor(i / batchSize) + 1;
     const totalBatches = Math.ceil(matches.length / batchSize);
     
-    showStatus(`Processing batch ${batchNum}/${totalBatches} (${batch.length} events)...`, 'loading');
+    showStatus(`Processing events ${i + 1}-${Math.min(i + batchSize, matches.length)} of ${matches.length}...`, 'loading');
     
     try {
       const events = await processSmallBatch(batch, pageTitle);
@@ -318,113 +342,94 @@ async function processPreciseMatches(matches, pageTitle) {
         allEvents.push(...events);
       }
       
-      // Delay between batches to avoid overwhelming the API
+      // Small delay between batches
       if (i + batchSize < matches.length) {
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
     } catch (error) {
       console.warn(`Batch ${batchNum} failed:`, error);
-      // Continue with remaining batches
     }
   }
   
-  console.log(`Total events from all batches: ${allEvents.length}`);
-  
-  // Remove duplicates and sort chronologically
+  console.log(`Total events extracted: ${allEvents.length}`);
   return deduplicateAndSort(allEvents);
 }
 
-// Process a small batch with focused AI prompting
+// Process a small batch with AI
 async function processSmallBatch(matches, pageTitle) {
-  if (!window.ai?.writer) {
-    console.warn('Writer API not available');
-    return [];
+  if (!aiSession) {
+    throw new Error('AI session not available');
   }
   
-  let session = null;
-  
   try {
-    const capabilities = await ai.writer.capabilities();
-    if (capabilities.available !== 'readily') {
-      throw new Error('Writer API not ready');
-    }
-    
-    session = await ai.writer.create({
-      tone: 'neutral',
-      format: 'plain-text',
-      length: 'short'
-    });
-    
-    // Create very focused prompts for each match
+    // Create focused prompt for each match
     const contextBlocks = matches.map((match, index) => {
-      return `Event ${index + 1}:
-Date Pattern: "${match.dateText}"
-Context: "${match.fullContext}"
-Type: ${match.type}`;
+      return `[${index + 1}] Date: "${match.dateText}" | Context: "${match.context.substring(0, 200)}..."`;
     }).join('\n\n');
     
-    const prompt = `Extract timeline events from these precise date matches. Focus on the specific historical event or fact mentioned.
+    const prompt = `Extract timeline events from this webpage content. For each date pattern, identify the specific historical event, fact, or milestone mentioned.
 
 Page: ${pageTitle}
 
-Date Matches:
+Date patterns found:
 ${contextBlocks}
 
-Rules:
-- Extract ONLY the specific event mentioned around each date
-- Create clear, factual titles (30-70 chars)
-- Provide brief descriptions (80-150 chars)  
-- Use the exact date when clear, or best approximation
-- Skip if no clear historical event is mentioned
-- For ancient dates (BC/BCE), preserve the original format
+Instructions:
+- Extract only clear, factual events (births, deaths, founding dates, historical events, etc.)
+- Create concise titles (max 60 characters)
+- Provide brief descriptions (max 120 characters)
+- Use ISO date format (YYYY-MM-DD) when possible
+- For incomplete dates, use YYYY-01-01 or YYYY-MM-01
+- For BC dates, use negative years like -0044-03-15
+- Skip if no clear event is mentioned
 
-Return ONLY valid JSON:
-[{"date": "YYYY-MM-DD", "title": "Event title", "description": "Brief description"}]
+Respond with valid JSON array only:
+[
+  {"date": "YYYY-MM-DD", "title": "Event title", "description": "Brief description"},
+  {"date": "YYYY-MM-DD", "title": "Another event", "description": "Another description"}
+]`;
 
-For BC dates use negative years: {"date": "-0100-01-01", "title": "Event in 100 BC", "description": "Description"}`;
-
-    console.log('Sending prompt to AI:', prompt.substring(0, 200) + '...');
+    console.log('Sending prompt to LanguageModel...');
     
-    const result = await session.write(prompt);
-    console.log('AI response received:', result.substring(0, 200) + '...');
+    // Use the correct prompt method
+    const result = await aiSession.prompt(prompt);
     
-    session.destroy();
+    console.log('AI response received, parsing...');
     return parseAIResponse(result);
     
   } catch (error) {
-    console.error('Small batch AI processing failed:', error);
-    if (session) session.destroy();
-    return [];
+    console.error('AI processing failed:', error);
+    throw error;
   }
 }
 
-// Parse AI response with better error handling and validation
+// Parse AI response with robust error handling
 function parseAIResponse(response) {
   try {
-    // Clean the response
+    // Clean response
     let clean = response.trim();
     
-    // Remove markdown formatting
-    clean = clean.replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+    // Remove markdown code blocks
+    clean = clean.replace(/```json\s*/gi, '').replace(/```\s*$/g, '');
     clean = clean.replace(/```/g, '');
     
-    // Extract JSON array
+    // Find JSON array
     const start = clean.indexOf('[');
     const end = clean.lastIndexOf(']') + 1;
     
     if (start === -1 || end <= start) {
-      console.warn('No JSON array found in response:', clean);
+      console.warn('No JSON array found in response');
       return [];
     }
     
     const jsonStr = clean.substring(start, end);
-    console.log('Parsing JSON:', jsonStr);
+    console.log('Parsing JSON:', jsonStr.substring(0, 200) + '...');
     
     const events = JSON.parse(jsonStr);
     
     if (!Array.isArray(events)) {
-      console.warn('Parsed result is not an array');
+      console.warn('Response is not an array');
       return [];
     }
     
@@ -432,31 +437,21 @@ function parseAIResponse(response) {
     return events
       .filter(event => {
         if (!event.date || !event.title) {
-          console.warn('Event missing date or title:', event);
+          console.warn('Event missing required fields:', event);
           return false;
         }
         
-        // Validate date format
-        let testDate;
+        // Basic date validation
         if (event.date.startsWith('-')) {
-          // BC date - just check it's reasonable
-          const year = parseInt(event.date.split('-')[1]);
-          if (isNaN(year) || year > 9999) return false;
-          testDate = new Date('0001-01-01'); // Placeholder for BC dates
+          // BC date
+          const yearPart = event.date.substring(1).split('-')[0];
+          if (isNaN(parseInt(yearPart))) return false;
         } else {
-          testDate = new Date(event.date);
+          const testDate = new Date(event.date);
           if (isNaN(testDate.getTime())) {
-            console.warn('Invalid date:', event.date);
+            console.warn('Invalid date format:', event.date);
             return false;
           }
-        }
-        
-        // Filter out bad titles
-        const titleLower = event.title.toLowerCase();
-        const badPatterns = ['wikipedia', 'disambiguation', 'copyright', 'all rights', 'home page'];
-        if (badPatterns.some(pattern => titleLower.includes(pattern))) {
-          console.warn('Filtered out bad title:', event.title);
-          return false;
         }
         
         return true;
@@ -464,105 +459,106 @@ function parseAIResponse(response) {
       .map(event => ({
         date: event.date,
         title: event.title.substring(0, 80).trim(),
-        description: (event.description || event.title).substring(0, 200).trim(),
-        confidence: 0.90,
+        description: (event.description || event.title).substring(0, 150).trim(),
         source: 'ai'
       }));
       
   } catch (error) {
     console.error('Failed to parse AI response:', error);
-    console.log('Raw response that failed:', response);
+    console.log('Raw response:', response.substring(0, 500));
     return [];
   }
 }
 
-// Deduplicate events and sort chronologically
+// Remove duplicates and sort chronologically
 function deduplicateAndSort(events) {
-  // Remove duplicates based on similar dates and titles
   const uniqueEvents = [];
   const seen = new Set();
   
   events.forEach(event => {
-    const key = `${event.date}-${event.title.substring(0, 30).toLowerCase().replace(/\s+/g, '')}`;
+    const key = `${event.date}-${event.title.substring(0, 20).toLowerCase().replace(/\s+/g, '')}`;
     if (!seen.has(key)) {
       seen.add(key);
       uniqueEvents.push(event);
     }
   });
   
-  // Sort chronologically (handle BC dates)
+  // Sort chronologically
   return uniqueEvents.sort((a, b) => {
-    const dateA = a.date.startsWith('-') ? new Date(`0001${a.date.substring(5)}`) : new Date(a.date);
-    const dateB = b.date.startsWith('-') ? new Date(`0001${b.date.substring(5)}`) : new Date(b.date);
-    
-    // BC dates should come first
+    // Handle BC dates
     if (a.date.startsWith('-') && !b.date.startsWith('-')) return -1;
     if (!a.date.startsWith('-') && b.date.startsWith('-')) return 1;
     
     if (a.date.startsWith('-') && b.date.startsWith('-')) {
-      // For BC dates, more negative (earlier) comes first
       return a.date.localeCompare(b.date);
     }
     
-    return dateA - dateB;
+    return new Date(a.date) - new Date(b.date);
   });
 }
 
-// Display timeline with better BC date handling
+// Display timeline with enhanced styling
 function displayTimeline(events) {
   if (!events || events.length === 0) {
     timelineDiv.innerHTML = `
       <div class="empty-state">
-        <div class="empty-icon">📅</div>
-        <h3>No Timeline Events Found</h3>
-        <p>Try a page with historical content, news articles, or biographical information.</p>
+        <div style="font-size: 3rem; margin-bottom: 1rem;">📅</div>
+        <h3 style="margin: 0 0 0.5rem 0; color: #667eea;">No Timeline Events Found</h3>
+        <p style="margin: 0; color: #888; font-size: 0.9rem;">Try a page with historical content, news articles, or biographical information.</p>
       </div>
     `;
     return;
   }
   
-  let html = '<div class="timeline-container">';
+  let html = '';
   
   events.forEach((event, index) => {
     const formattedDate = formatDate(event.date);
-    const sourceIcon = event.source === 'local' ? '⚡' : '🤖';
     
     html += `
-      <div class="timeline-event">
-        <div class="event-header" onclick="toggleEvent(${index})">
-          <div class="event-main">
-            <span class="event-date">${formattedDate}</span>
-            <span class="event-title">${escapeHtml(event.title)}</span>
-          </div>
-          <div class="event-controls">
-            <span class="source-indicator" title="Processed with AI">${sourceIcon}</span>
-            <button class="expand-btn" id="btn-${index}">
-              <span class="expand-icon">▼</span>
-            </button>
-          </div>
-        </div>
-        <div class="event-details" id="details-${index}" style="display: none;">
-          <div class="event-description">${escapeHtml(event.description)}</div>
-          <div class="event-meta">
-            <small>Confidence: ${Math.round(event.confidence * 100)}% | AI Processed</small>
+      <div class="timeline-item" onclick="toggleEventDetails(${index})">
+        <div class="event-date">${formattedDate}</div>
+        <div class="event-title">${escapeHtml(event.title)}</div>
+        <div class="event-description" id="desc-${index}" style="display: none;">
+          ${escapeHtml(event.description)}
+          <div style="margin-top: 8px; font-size: 0.75rem; color: #888;">
+            🤖 Generated by AI • Click to collapse
           </div>
         </div>
       </div>
     `;
   });
   
-  html += '</div>';
   timelineDiv.innerHTML = html;
 }
+
+// Toggle event details
+function toggleEventDetails(index) {
+  const desc = document.getElementById(`desc-${index}`);
+  if (desc) {
+    desc.style.display = desc.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
+// Make function globally accessible
+window.toggleEventDetails = toggleEventDetails;
 
 // Format dates including BC dates
 function formatDate(dateString) {
   try {
     if (dateString.startsWith('-')) {
-      // Handle BC dates
       const parts = dateString.substring(1).split('-');
       const year = parseInt(parts[0]);
-      return `${year} BC`;
+      const month = parseInt(parts[1]) || 1;
+      const day = parseInt(parts[2]) || 1;
+      
+      if (month === 1 && day === 1) {
+        return `${year} BC`;
+      }
+      
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${monthNames[month - 1]} ${day}, ${year} BC`;
     }
     
     const date = new Date(dateString);
@@ -577,26 +573,6 @@ function formatDate(dateString) {
     return dateString;
   }
 }
-
-// Toggle event details
-function toggleEvent(index) {
-  const details = document.getElementById(`details-${index}`);
-  const button = document.getElementById(`btn-${index}`);
-  const icon = button.querySelector('.expand-icon');
-  
-  if (details.style.display === 'none') {
-    details.style.display = 'block';
-    icon.textContent = '▲';
-    button.classList.add('expanded');
-  } else {
-    details.style.display = 'none';
-    icon.textContent = '▼';
-    button.classList.remove('expanded');
-  }
-}
-
-// Make toggleEvent globally accessible
-window.toggleEvent = toggleEvent;
 
 // Show status messages
 function showStatus(message, type) {
