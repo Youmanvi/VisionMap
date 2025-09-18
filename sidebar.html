@@ -4,157 +4,446 @@
   <meta charset="utf-8">
   <title>Timeline Extractor</title>
   <style>
+    /* Import your existing CSS variables and theme */
+    @custom-variant dark (&:is(.dark *));
+
+    :root {
+      --font-size: 16px;
+      --background: #ffffff;
+      --foreground: oklch(0.145 0 0);
+      --card: #ffffff;
+      --card-foreground: oklch(0.145 0 0);
+      --popover: oklch(1 0 0);
+      --popover-foreground: oklch(0.145 0 0);
+      --primary: #030213;
+      --primary-foreground: oklch(1 0 0);
+      --secondary: oklch(0.95 0.0058 264.53);
+      --secondary-foreground: #030213;
+      --muted: #ececf0;
+      --muted-foreground: #717182;
+      --accent: #e9ebef;
+      --accent-foreground: #030213;
+      --destructive: #d4183d;
+      --destructive-foreground: #ffffff;
+      --border: rgba(0, 0, 0, 0.1);
+      --input: transparent;
+      --input-background: #f3f3f5;
+      --switch-background: #cbced4;
+      --font-weight-medium: 500;
+      --font-weight-normal: 400;
+      --ring: oklch(0.708 0 0);
+      --chart-1: oklch(0.646 0.222 41.116);
+      --chart-2: oklch(0.6 0.118 184.704);
+      --chart-3: oklch(0.398 0.07 227.392);
+      --chart-4: oklch(0.828 0.189 84.429);
+      --chart-5: oklch(0.769 0.188 70.08);
+      --radius: 0.625rem;
+      --sidebar: oklch(0.985 0 0);
+      --sidebar-foreground: oklch(0.145 0 0);
+      --sidebar-primary: #030213;
+      --sidebar-primary-foreground: oklch(0.985 0 0);
+      --sidebar-accent: oklch(0.97 0 0);
+      --sidebar-accent-foreground: oklch(0.205 0 0);
+      --sidebar-border: oklch(0.922 0 0);
+      --sidebar-ring: oklch(0.708 0 0);
+    }
+
+    .dark {
+      --background: oklch(0.145 0 0);
+      --foreground: oklch(0.985 0 0);
+      --card: oklch(0.145 0 0);
+      --card-foreground: oklch(0.985 0 0);
+      --popover: oklch(0.145 0 0);
+      --popover-foreground: oklch(0.985 0 0);
+      --primary: oklch(0.985 0 0);
+      --primary-foreground: oklch(0.205 0 0);
+      --secondary: oklch(0.269 0 0);
+      --secondary-foreground: oklch(0.985 0 0);
+      --muted: oklch(0.269 0 0);
+      --muted-foreground: oklch(0.708 0 0);
+      --accent: oklch(0.269 0 0);
+      --accent-foreground: oklch(0.985 0 0);
+      --destructive: oklch(0.396 0.141 25.723);
+      --destructive-foreground: oklch(0.637 0.237 25.331);
+      --border: oklch(0.269 0 0);
+      --input: oklch(0.269 0 0);
+      --ring: oklch(0.439 0 0);
+      --font-weight-medium: 500;
+      --font-weight-normal: 400;
+      --chart-1: oklch(0.488 0.243 264.376);
+      --chart-2: oklch(0.696 0.17 162.48);
+      --chart-3: oklch(0.769 0.188 70.08);
+      --chart-4: oklch(0.627 0.265 303.9);
+      --chart-5: oklch(0.645 0.246 16.439);
+      --sidebar: oklch(0.205 0 0);
+      --sidebar-foreground: oklch(0.985 0 0);
+      --sidebar-primary: oklch(0.488 0.243 264.376);
+      --sidebar-primary-foreground: oklch(0.985 0 0);
+      --sidebar-accent: oklch(0.269 0 0);
+      --sidebar-accent-foreground: oklch(0.985 0 0);
+      --sidebar-border: oklch(0.269 0 0);
+      --sidebar-ring: oklch(0.439 0 0);
+    }
+
+    /* Base styles */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
       width: 400px;
       margin: 0;
-      font-family: 'Segoe UI', sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      padding: 20px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--background);
+      color: var(--foreground);
+      line-height: 1.5;
     }
-    
+
+    .dark body {
+      background: var(--background);
+      color: var(--foreground);
+    }
+
+    /* Container styling matching your timeline component */
+    .timeline-container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--background);
+      color: var(--foreground);
+    }
+
+    .dark .timeline-container {
+      background: var(--background);
+      color: var(--foreground);
+    }
+
+    /* Header styles */
     .header {
-      text-align: center;
-      margin-bottom: 20px;
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
     }
-    
-    .header h1 {
-      font-size: 1.5rem;
-      margin: 0;
-      color: #667eea;
+
+    .header h2 {
+      font-size: 1.125rem;
+      font-weight: 500;
+      margin-bottom: 0.25rem;
+      color: var(--foreground);
     }
-    
+
+    .header p {
+      font-size: 0.875rem;
+      color: var(--muted-foreground);
+    }
+
+    /* Button styling */
     .extract-btn {
       width: 100%;
-      padding: 12px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+      padding: 0.75rem 1rem;
+      background: var(--primary);
+      color: var(--primary-foreground);
       border: none;
-      border-radius: 8px;
-      font-size: 1rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      font-weight: 500;
       cursor: pointer;
-      margin-bottom: 20px;
-      transition: all 0.3s ease;
+      margin-bottom: 1rem;
+      transition: all 0.2s ease;
     }
-    
+
     .extract-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+      opacity: 0.9;
     }
-    
+
     .extract-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
-      transform: none;
     }
-    
+
+    /* Status styles */
     .status {
-      padding: 10px;
-      margin-bottom: 20px;
-      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+      border-radius: calc(var(--radius) - 2px);
       text-align: center;
-      font-size: 0.9rem;
+      font-size: 0.875rem;
+      border: 1px solid transparent;
     }
-    
+
     .status.loading {
-      background: rgba(255, 193, 7, 0.2);
+      background: rgba(255, 193, 7, 0.1);
       color: #ffc107;
+      border-color: rgba(255, 193, 7, 0.2);
     }
-    
+
     .status.error {
-      background: rgba(220, 53, 69, 0.2);
-      color: #dc3545;
+      background: rgba(239, 68, 68, 0.1);
+      color: #ef4444;
+      border-color: rgba(239, 68, 68, 0.2);
     }
-    
+
     .status.success {
-      background: rgba(40, 167, 69, 0.2);
-      color: #28a745;
+      background: rgba(34, 197, 94, 0.1);
+      color: #22c55e;
+      border-color: rgba(34, 197, 94, 0.2);
     }
-    
-    .timeline {
+
+    /* Main content area */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      background: var(--background);
+    }
+
+    /* Timeline styles matching your component */
+    .timeline-wrapper {
       position: relative;
-      padding: 20px 0;
+      padding: 1rem 0;
     }
-    
-    .timeline::before {
-      content: '';
+
+    /* Timeline line */
+    .timeline-line {
       position: absolute;
-      left: 20px;
+      left: 5px;
       top: 0;
       bottom: 0;
-      width: 2px;
-      background: linear-gradient(to bottom, #667eea, #764ba2);
+      width: 1px;
+      background: var(--border);
     }
-    
+
+    /* Timeline items */
     .timeline-item {
       position: relative;
-      margin-bottom: 30px;
-      margin-left: 40px;
-      background: rgba(255, 255, 255, 0.08);
-      padding: 15px;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.3s ease;
+      display: flex;
+      align-items: start;
+      margin-bottom: 0.75rem;
+      padding-left: 2rem;
     }
-    
-    .timeline-item:hover {
-      background: rgba(255, 255, 255, 0.12);
-      transform: translateY(-2px);
-    }
-    
-    .timeline-item::before {
-      content: '';
+
+    .timeline-dot {
       position: absolute;
-      left: -30px;
-      top: 20px;
-      width: 10px;
-      height: 10px;
-      background: #667eea;
+      left: 0;
+      top: 0.5rem;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
-      border: 2px solid #1a1a2e;
+      border: 2px solid;
+      z-index: 10;
+      background: var(--background);
     }
-    
-    .event-date {
-      font-size: 0.8rem;
-      color: #667eea;
-      font-weight: bold;
-      margin-bottom: 5px;
+
+    .timeline-dot.search {
+      background: rgb(51 65 85);
+      border-color: rgb(71 85 105);
     }
-    
-    .event-title {
-      font-weight: bold;
-      margin-bottom: 8px;
-      font-size: 1rem;
+
+    .timeline-dot.location {
+      background: rgb(68 64 60);
+      border-color: rgb(87 83 78);
     }
-    
-    .event-description {
-      font-size: 0.9rem;
-      line-height: 1.4;
-      color: #ccc;
+
+    .timeline-dot.activity {
+      background: rgb(63 63 70);
+      border-color: rgb(82 82 91);
     }
-    
+
+    .timeline-dot.document {
+      background: rgb(64 64 64);
+      border-color: rgb(82 82 82);
+    }
+
+    /* Card styles */
+    .timeline-card {
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      min-width: 0;
+    }
+
+    .timeline-card:hover {
+      background: var(--accent);
+    }
+
+    .timeline-card.search {
+      background: rgba(51, 65, 85, 0.4);
+      border-color: rgba(71, 85, 105, 0.5);
+    }
+
+    .timeline-card.location {
+      background: rgba(68, 64, 60, 0.4);
+      border-color: rgba(87, 83, 78, 0.5);
+    }
+
+    .timeline-card.activity {
+      background: rgba(63, 63, 70, 0.4);
+      border-color: rgba(82, 82, 91, 0.5);
+    }
+
+    .timeline-card.document {
+      background: rgba(64, 64, 64, 0.4);
+      border-color: rgba(82, 82, 82, 0.5);
+    }
+
+    .dark .timeline-card.search:hover {
+      background: rgba(51, 65, 85, 0.6);
+    }
+
+    .dark .timeline-card.location:hover {
+      background: rgba(68, 64, 60, 0.6);
+    }
+
+    .dark .timeline-card.activity:hover {
+      background: rgba(63, 63, 70, 0.6);
+    }
+
+    .dark .timeline-card.document:hover {
+      background: rgba(64, 64, 64, 0.6);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .card-title {
+      font-weight: 500;
+      font-size: 0.875rem;
+      margin-bottom: 0.25rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-description {
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      margin-bottom: 0.25rem;
+    }
+
+    .card-timestamp {
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+    }
+
+    .chevron {
+      width: 1rem;
+      height: 1rem;
+      color: var(--muted-foreground);
+      transition: transform 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .chevron.expanded {
+      transform: rotate(90deg);
+    }
+
+    .card-details {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .card-details p {
+      font-size: 0.875rem;
+      color: var(--muted-foreground);
+    }
+
+    /* Footer */
+    .footer {
+      padding: 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--card);
+    }
+
+    .footer button {
+      width: 100%;
+      background: none;
+      border: none;
+      color: var(--primary);
+      font-size: 0.875rem;
+      cursor: pointer;
+      padding: 0.5rem;
+      text-decoration: underline;
+    }
+
+    .footer button:hover {
+      opacity: 0.8;
+    }
+
+    /* Empty state */
     .empty-state {
       text-align: center;
-      color: #888;
+      padding: 2rem 1rem;
+      color: var(--muted-foreground);
       font-style: italic;
-      padding: 40px 20px;
+    }
+
+    .empty-state .icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+
+    .empty-state h3 {
+      margin: 0 0 0.5rem 0;
+      color: var(--primary);
+      font-size: 1.125rem;
+    }
+
+    .empty-state p {
+      margin: 0;
+      font-size: 0.9rem;
+    }
+
+    /* Dark mode is applied by default, add class to body */
+    .dark {
+      color-scheme: dark;
     }
   </style>
 </head>
-<body>
-  <div class="header">
-    <h1>📚 Timeline Extractor</h1>
-  </div>
-  
-  <button id="extractBtn" class="extract-btn">
-    Extract Timeline from Current Page
-  </button>
-  
-  <div id="status" class="status" style="display: none;"></div>
-  
-  <div id="timeline" class="timeline">
-    <div class="empty-state">
-      Click "Extract Timeline" to analyze the current webpage and generate a timeline of events.
+<body class="dark">
+  <div class="timeline-container">
+    <!-- Header -->
+    <div class="header">
+      <h2>📚 Timeline Extractor</h2>
+      <p>Extract timelines using Gemini AI</p>
+    </div>
+    
+    <!-- Content -->
+    <div class="content">
+      <button id="extractBtn" class="extract-btn">
+        Extract Timeline from Current Page
+      </button>
+      
+      <div id="status" class="status" style="display: none;"></div>
+      
+      <!-- Timeline container -->
+      <div id="timeline" class="timeline-wrapper">
+        <div class="timeline-line"></div>
+        <div class="empty-state">
+          <div class="icon">📅</div>
+          <h3>Ready to Extract Timeline</h3>
+          <p>Click "Extract Timeline" to analyze the current webpage and generate a timeline of events using Gemini AI.</p>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <div class="footer">
+      <button id="viewAllBtn">View all activity</button>
     </div>
   </div>
   
